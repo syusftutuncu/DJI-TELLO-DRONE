@@ -13,6 +13,7 @@ DURUM_KALKIS = 1
 DURUM_KESIF = 2
 DURUM_HEDEF_SEC = 3
 DURUM_HIZALAN = 4
+DURUM_ASANSOR = 5
 DURUM_BOSLUK_HIZALAN = 12
 DURUM_KOR_UCUS = 6
 DURUM_INIS = 7
@@ -77,9 +78,11 @@ def aruco_oku(frame):
 
     if idler is not None:
         for i, a_id in enumerate(idler.flatten()):
+            # --- EKLENEN KISIM: SADECE BELİRLİ ID'LERİ KABUL ET ---
             if a_id in HEDEF_ARUCO_IDLER:
                 gecerli_koseler.append(koseler[i])
                 gecerli_idler.append([a_id])
+            # -----------------------------------------------------
 
         if len(gecerli_idler) > 0:
             return tuple(gecerli_koseler), np.array(gecerli_idler, dtype=np.int32)
@@ -88,12 +91,9 @@ def aruco_oku(frame):
 
 
 # ==========================================
-# İÇ ODAKLI MESAFE DÖNÜŞÜMÜ (EN BÜYÜK BOŞLUK ODAKLI)
+# İÇ ODAKLI MESAFE DÖNÜŞÜMÜ (DIŞA KAÇMA VE ÇERÇEVE KORUMALI)
 # ==========================================
 bosluk_takip = {"cx": None, "cy": None, "aruco_tepe_y": None}
-
-# Boşluk arama bölgesi (ROI). Ana döngüdeki görselleştirme kutusu da bunu kullanır.
-BOSLUK_ROI = {"x_bas": 100, "x_bit": 860, "y_bas": 90, "y_bit": 630}
 
 
 def bosluk_hafizasini_sifirla():
@@ -103,16 +103,8 @@ def bosluk_hafizasini_sifirla():
 
 
 def guvenli_bosluk_bul(frame):
-    # =========================================================
-    # DÜZELTME 1 (EN BÜYÜK BOŞLUK): Arama bölgesi (ROI) genişletildi.
-    # Eski dar ROI (200-760 / 140-580) yalnızca karenin merkezini
-    # tarıyordu. Engelin KENARINDAKİ büyük boşluk ROI sınırında
-    # kırpıldığı için küçük ölçülüyor, MERKEZE yakın küçük boşluk tam
-    # ölçülüp "kazanıyordu". Bu yüzden drone en büyük değil, kendine en
-    # yakın (çoğunlukla en küçük) boşluğu seçiyordu.
-    # =========================================================
-    x_bas, x_bit = BOSLUK_ROI["x_bas"], BOSLUK_ROI["x_bit"]
-    y_bas, y_bit = BOSLUK_ROI["y_bas"], BOSLUK_ROI["y_bit"]
+    x_bas, x_bit = 200, 760
+    y_bas, y_bit = 140, 580
 
     aruco_koseler, _ = aruco_oku(frame)
     if aruco_koseler is not None and len(aruco_koseler) > 0:
@@ -127,13 +119,13 @@ def guvenli_bosluk_bul(frame):
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
     alt_siyah = np.array([0, 0, 0])
-    ust_siyah = np.array([180, 255, 55])
+    ust_siyah = np.array([125, 255, 45])
     maske_siyah = cv2.inRange(hsv, alt_siyah, ust_siyah)
 
-    alt_kirmizi1 = np.array([0, 35, 40])
-    ust_kirmizi1 = np.array([15, 255, 255])
-    alt_kirmizi2 = np.array([165, 35, 40])
-    ust_kirmizi2 = np.array([180, 255, 255])
+    alt_kirmizi1 = np.array([115, 63, 75])
+    ust_kirmizi1 = np.array([137, 255, 255])
+    alt_kirmizi2 = np.array([115, 63, 75])
+    ust_kirmizi2 = np.array([137, 255, 255])
     maske_kirmizi1 = cv2.inRange(hsv, alt_kirmizi1, ust_kirmizi1)
     maske_kirmizi2 = cv2.inRange(hsv, alt_kirmizi2, ust_kirmizi2)
     maske_kirmizi = cv2.bitwise_or(maske_kirmizi1, maske_kirmizi2)
@@ -162,106 +154,56 @@ def guvenli_bosluk_bul(frame):
 
     BANT_ALAN_ESIGI = 900
     if toplam_alan > BANT_ALAN_ESIGI and len(gecerli_konturlar) > 0:
-        # =========================================================
-        # DÜZELTME 5 (ÇERÇEVE İÇİ + YAKINDA DA ÇALIŞSIN):
-        # Önceki "tek en büyük kontur" yöntemi, drone engele yaklaşıp
-        # çerçeve ROI kenarlarından TAŞINCA çerçeveyi tek parça göremiyordu
-        # (üst/alt/yan çubuklar ayrı konturlara bölünüyordu). Tek çubuğu
-        # doldurmak iç boşluk bırakmadığı için sürekli bant_var=False
-        # dönüyor, drone boşluğa hiç bakmadan direkt kör uçuşa geçiyordu.
-        #
-        # Çözüm: Çerçeveyi KIRMIZI maskeden tanımla. Kırmızının büyük
-        # parçalarının dışbükey zarfı (convex hull), çubuklar bölünse/
-        # kırpılsa bile çerçevenin çevrelediği alanı yeniden birleştirir.
-        # Kırmızı kullanıldığı için arka plandaki koyu lekeler bölgeyi
-        # şişirmez -> çerçeve DIŞI yerler yine boşluk olarak seçilmez.
-        # =========================================================
-        maske_kirmizi_temiz = cv2.morphologyEx(maske_kirmizi, cv2.MORPH_OPEN, kernel, iterations=1)
-        maske_kirmizi_temiz = cv2.morphologyEx(maske_kirmizi_temiz, cv2.MORPH_CLOSE, kernel, iterations=2)
-        kirmizi_konturlar, _ = cv2.findContours(maske_kirmizi_temiz, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        kirmizi_buyuk = [k for k in kirmizi_konturlar if cv2.contourArea(k) >= MIN_KONTUR_ALAN]
+        tum_noktalar = np.vstack(gecerli_konturlar)
+        hull = cv2.convexHull(tum_noktalar)
 
-        maske_cerceve_ici = np.zeros_like(maske_engel)
-
-        if len(kirmizi_buyuk) > 0:
-            # Kırmızı çerçevenin (parçalı/kırpık olsa da) çevrelediği alan.
-            kirmizi_noktalar = np.vstack(kirmizi_buyuk)
-            hull = cv2.convexHull(kirmizi_noktalar)
-            cv2.drawContours(maske_cerceve_ici, [hull], -1, 255, -1)
-        else:
-            # Kırmızı görünmüyorsa: en büyük engel konturunu (çerçeveyi) doldur.
-            cerceve_konturu = max(gecerli_konturlar, key=cv2.contourArea)
-            cv2.drawContours(maske_cerceve_ici, [cerceve_konturu], -1, 255, -1)
-
-        # Çerçeve bölgesi anlamlı bir alan kaplamıyorsa geçiş arama.
-        if cv2.countNonZero(maske_cerceve_ici) < 3000:
-            bosluk_hafizasini_sifirla()
-            return cx, cy, False, None
+        maske_dis_ceper = np.zeros_like(maske_engel)
+        cv2.drawContours(maske_dis_ceper, [hull], -1, 255, -1)
 
         guvenlik_kernel = np.ones((25, 25), np.uint8)
         maske_engel_sisirilmis = cv2.dilate(maske_engel, guvenlik_kernel, iterations=1)
 
-        # Çerçeve içi - (şişirilmiş engel) = çerçeve içindeki güvenli boşluk.
-        bosluk_maskesi = cv2.bitwise_and(maske_cerceve_ici, cv2.bitwise_not(maske_engel_sisirilmis))
+        bosluk_maskesi = cv2.bitwise_and(maske_dis_ceper, cv2.bitwise_not(maske_engel_sisirilmis))
 
-        # =========================================================
-        # DÜZELTME 6 (ARUCO KIRPMASI KALDIRILDI):
-        # Eski "ArUco tepesinin altını sil" mantığı, boşluğun her zaman
-        # ArUco'nun ÜSTÜNDE olduğunu varsayıyordu. Bu varsayım yanlış
-        # olduğunda gerçek boşluğu silip bant_var=False üretiyor, drone da
-        # boşluğa hizalanamadan banta çarpıyordu. Kaldırıldı: en büyük iç
-        # daire seçimi, boşluğu tüm engellerden (siyah bant dahil) EN UZAK
-        # noktada seçtiği için banttan kaçınmayı zaten sağlıyor; ArUco'nun
-        # siyah kareleri de siyah maskeyle engel sayılıp boşluktan çıkıyor.
-        # =========================================================
+        aruco_y = bosluk_takip.get("aruco_tepe_y")
+        if aruco_y is not None:
+            guvenli_sinir_y = aruco_y - y_bas - 10
+            if 0 < guvenli_sinir_y < (y_bit - y_bas):
+                bosluk_maskesi[guvenli_sinir_y:, :] = 0
+            elif guvenli_sinir_y <= 0:
+                bosluk_maskesi[:] = 0
+
         mesafe_haritasi = cv2.distanceTransform(bosluk_maskesi, cv2.DIST_L2, 5)
 
-        # =========================================================
-        # DÜZELTME 3 (EN BÜYÜK BOŞLUĞU AÇIKÇA SEÇ):
-        # Boşluk maskesini bağlı bileşenlere ayırıp her ayrı boşluğun
-        # içine sığan en büyük dairenin yarıçapını (distanceTransform tepe
-        # değeri) buluyoruz. Yarıçapı EN BÜYÜK olan boşluğu seçiyoruz.
-        # Böylece "merkeze en yakın" değil, gerçekten "en geniş geçiş"
-        # noktası hedeflenir.
-        # =========================================================
-        sayi, etiketler, istatistik, _ = cv2.connectedComponentsWithStats(bosluk_maskesi, connectivity=8)
+        rows, cols = mesafe_haritasi.shape
+        centerY, centerX = rows / 2.0, cols / 2.0
+        y_indices, x_indices = np.indices((rows, cols))
+        max_dist = np.sqrt(centerX ** 2 + centerY ** 2)
+        dist_from_center = np.sqrt((x_indices - centerX) ** 2 + (y_indices - centerY) ** 2)
 
-        en_iyi_yaricap = 0.0
-        en_iyi_x_roi = None
-        en_iyi_y_roi = None
+        center_weight = np.clip(1.0 - (dist_from_center / max_dist), 0, 1) ** 3
+        agirlikli_mesafe = mesafe_haritasi * center_weight
 
-        for etiket in range(1, sayi):
-            if istatistik[etiket, cv2.CC_STAT_AREA] < 150:
-                continue
-            bilesen_dt = np.where(etiketler == etiket, mesafe_haritasi, 0)
-            _, yerel_max, _, yerel_loc = cv2.minMaxLoc(bilesen_dt)
-            if yerel_max > en_iyi_yaricap:
-                en_iyi_yaricap = yerel_max
-                en_iyi_x_roi, en_iyi_y_roi = yerel_loc
+        _, max_val, _, max_loc = cv2.minMaxLoc(agirlikli_mesafe)
+        bosluk_x_roi, bosluk_y_roi = max_loc
+
+        r = int(mesafe_haritasi[bosluk_y_roi, bosluk_x_roi])
 
         MIN_GECIS_YARICAPI = 15
-        if en_iyi_x_roi is None or en_iyi_yaricap < MIN_GECIS_YARICAPI:
+        if r < MIN_GECIS_YARICAPI:
             bosluk_hafizasini_sifirla()
             return frame.shape[1] // 2, frame.shape[0] // 2, False, None
 
-        r = int(en_iyi_yaricap)
-
-        cx = en_iyi_x_roi + x_bas
-        cy = en_iyi_y_roi + y_bas
+        cx = bosluk_x_roi + x_bas
+        cy = bosluk_y_roi + y_bas
 
         alpha = 0.35
         if bosluk_takip["cx"] is None:
             bosluk_takip["cx"], bosluk_takip["cy"] = cx, cy
         else:
-            # Seçilen boşluk bir öncekinden çok uzaktaysa (yani daha büyük
-            # bir boşluğa geçilmişse) yumuşatma hafızasını sıfırla; iki
-            # boşluğun ortasına "karışık" bir hedef üretmesin.
-            if abs(cx - bosluk_takip["cx"]) > 130 or abs(cy - bosluk_takip["cy"]) > 130:
-                bosluk_takip["cx"], bosluk_takip["cy"] = cx, cy
-            else:
-                cx = int(alpha * cx + (1 - alpha) * bosluk_takip["cx"])
-                cy = int(alpha * cy + (1 - alpha) * bosluk_takip["cy"])
-                bosluk_takip["cx"], bosluk_takip["cy"] = cx, cy
+            cx = int(alpha * cx + (1 - alpha) * bosluk_takip["cx"])
+            cy = int(alpha * cy + (1 - alpha) * bosluk_takip["cy"])
+            bosluk_takip["cx"], bosluk_takip["cy"] = cx, cy
 
         kutu_verisi = (cx - r, cy - r, r * 2, r * 2)
         return cx, cy, True, kutu_verisi
@@ -271,13 +213,13 @@ def guvenli_bosluk_bul(frame):
 
 
 # ==========================================
-# H HARFİ DETEKSİYONU (GERÇEK MAVİ RENGİ)
+# H HARFİ DETEKSİYONU
 # ==========================================
 def mavi_h_tespit_et(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    alt_renk = np.array([90, 80, 50])
-    ust_renk = np.array([130, 255, 255])
+    alt_renk = np.array([0, 108, 42])
+    ust_renk = np.array([21, 202, 255])
 
     maske = cv2.inRange(hsv, alt_renk, ust_renk)
 
@@ -343,11 +285,11 @@ def main():
         frame_merkez_x = 960 // 2
         frame_merkez_y = 720 // 2
 
+        kilitlenen_yukseklik = None
         onay_sayaci = 0
         HEDEF_ONAY_SINIRI = 5
         hizalanma_onay_sayaci = 0
         bosluk_onay_sayaci = 0
-        bant_yok_sayaci = 0
         hedef_bulunamadi_sayaci = 0
         tarama_baslangic_zamani = 0
         tarama_fazi = 0
@@ -424,9 +366,10 @@ def main():
                 else:
                     drone.send_rc_control(0, 0, 0, 0)
                     time.sleep(0.5)
+                    kilitlenen_yukseklik = None
                     aranan_id = None
-                    onay_sayaci = 0
-                    hizalanma_onay_sayaci = 0
+                    onay_sayaci = 0;
+                    hizalanma_onay_sayaci = 0;
                     hedef_bulunamadi_sayaci = 0
                     tarama_fazi = 0
                     mevcut_durum = DURUM_HEDEF_SEC
@@ -505,13 +448,12 @@ def main():
                         if a_id == aranan_id:
                             aruco.drawDetectedMarkers(img, aruco_koseler, aruco_idler)
                             alan = cv2.contourArea(aruco_koseler[i])
-
                             aruco_merkez_x = int(np.mean(aruco_koseler[i][0][:, 0]))
+                            # --- EKLENEN KISIM: ARUCO'YA GÖRE DİKEY (İRTİFA) HATASI ---
                             aruco_merkez_y = int(np.mean(aruco_koseler[i][0][:, 1]))
-
                             hata_x = aruco_merkez_x - frame_merkez_x
                             hata_y = frame_merkez_y - aruco_merkez_y
-
+                            # ----------------------------------------------------------
                             hedef_bulundu = True
                             hedef_index = i
                             break
@@ -527,10 +469,12 @@ def main():
                     yaw_hiz = max(-40, min(40, int(hata_x / 3)))
                     sag_sol_hiz = max(-40, min(40, int(perspektif_orani * 250)))
 
+                    # --- EKLENEN KISIM: ARUCO'YA GÖRE İRTİFA HİZALAMASI (YUKARI/AŞAĞI) ---
                     if abs(hata_y) < 20:
                         yukari_asagi_hiz = 0
                     else:
                         yukari_asagi_hiz = max(-15, min(15, int(hata_y / 6)))
+                    # --------------------------------------------------------------------
 
                     hedef_alan = 6000
                     alan_hatasi = hedef_alan - alan
@@ -555,22 +499,23 @@ def main():
                             cv2.putText(img, "MESAFE IYI - BEKLENIYOR...", (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                                         (0, 255, 0), 2)
 
-                        if abs(hata_x) < 20 and abs(hata_y) < 25 and abs(
-                                perspektif_orani) < 0.04 and 5000 <= alan <= 7000:
+                        if abs(hata_x) < 20 and abs(hata_y) < 25 and abs(perspektif_orani) < 0.04 and 5000 <= alan <= 7000:
                             hizalanma_onay_sayaci += 1
-                            cv2.putText(img, f"TAM MERKEZ KILITLENME! ({hizalanma_onay_sayaci}/15)", (30, 110),
+                            cv2.putText(img, f"MUKEMMEL KILITLENME! ({hizalanma_onay_sayaci}/15)", (30, 110),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                         else:
                             hizalanma_onay_sayaci = 0
 
                     if hizalanma_onay_sayaci >= 15:
                         drone.send_rc_control(0, 0, 0, 0)
-                        print("[SİSTEM] ArUco merkezine kilitlenildi. Boşluk analizine geçiliyor.")
-                        time.sleep(0.5)
-                        bosluk_hafizasini_sifirla()
-                        mevcut_durum = DURUM_BOSLUK_HIZALAN
-                        bosluk_onay_sayaci = 0
-                        bant_yok_sayaci = 0
+
+                        if parkur_adimi == 0:
+                            kilitlenen_yukseklik = 65
+                        else:
+                            kilitlenen_yukseklik = 105
+
+                        print(f"[SİSTEM] Hizalanma tamam. Kilitli İrtifa: {kilitlenen_yukseklik}cm'e çıkılıyor.")
+                        mevcut_durum = DURUM_ASANSOR
                     else:
                         drone.send_rc_control(sag_sol_hiz, ileri_hiz, yukari_asagi_hiz, yaw_hiz)
                 else:
@@ -584,42 +529,38 @@ def main():
                         hedef_bulunamadi_sayaci = 0
                         onay_sayaci = 0
 
+            elif mevcut_durum == DURUM_ASANSOR:
+                mevcut_yukseklik = drone.get_height()
+                hata_y = kilitlenen_yukseklik - mevcut_yukseklik
+                cv2.putText(img, f"ASANSOR: {kilitlenen_yukseklik}cm HEDEFI | GUNCEL: {mevcut_yukseklik}cm", (30, 70),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 100, 255), 2)
+                if abs(hata_y) > 10:
+                    yukari_asagi_hiz = max(-40, min(40, int(hata_y * 1.5)))
+                    drone.send_rc_control(0, 0, yukari_asagi_hiz, 0)
+                else:
+                    drone.send_rc_control(0, 0, 0, 0)
+                    print("[SİSTEM] Kapı yüksekliğine ulaşıldı, geçilebilir boşluk analizi yapılıyor.")
+                    time.sleep(0.5)
+                    bosluk_hafizasini_sifirla()
+                    mevcut_durum = DURUM_BOSLUK_HIZALAN
+                    bosluk_onay_sayaci = 0
+
             elif mevcut_durum == DURUM_BOSLUK_HIZALAN:
                 bosluk_x, bosluk_y, bant_var, kutu = guvenli_bosluk_bul(img)
 
-                cv2.rectangle(img, (BOSLUK_ROI["x_bas"], BOSLUK_ROI["y_bas"]),
-                              (BOSLUK_ROI["x_bit"], BOSLUK_ROI["y_bit"]), (255, 0, 0), 2)
+                cv2.rectangle(img, (200, 140), (760, 580), (255, 0, 0), 2)
 
                 if not bant_var:
-                    bant_yok_sayaci += 1
-                    # =========================================================
-                    # DÜZELTME 7 (BANTA ÇARPMAYI ÖNLE):
-                    # Buraya ArUco'ya kilitlenerek geldik; yani engel MUTLAKA
-                    # var. Boşluğu görememek "bant yok" değil, "çok yaklaştım,
-                    # çerçeve görüş alanına sığmıyor, tespit başarısız" demektir.
-                    # Kör ileri gitmek doğrudan banta çarpmaktır -> ARTIK ASLA
-                    # kör geçmiyoruz. Bunun yerine GERİ çekilip tüm çerçeveyi
-                    # görüş alanına alarak boşluğu yeniden arıyoruz.
-                    # =========================================================
-                    if bant_yok_sayaci <= 60:
-                        cv2.putText(img, f"GECIS GORUNMUYOR - GERI CEKILIP ARANIYOR ({bant_yok_sayaci}/60)", (30, 110),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        drone.send_rc_control(0, -12, 0, 0)
-                    else:
-                        # Yeterince geri çekildik ama hâlâ boşluk yok: çarpmamak
-                        # için güvenli şekilde havada bekle (kör geçiş YOK).
-                        cv2.putText(img, "GECIS BULUNAMADI - GUVENLI DURUS (KOR GECIS YOK)", (30, 110),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        drone.send_rc_control(0, 0, 0, 0)
-
+                    cv2.putText(img, "SIYAH BANT YOK: DIREKT GECILIYOR", (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                                (0, 255, 0), 2)
+                    drone.send_rc_control(0, 0, 0, 0)
+                    mevcut_durum = DURUM_KOR_UCUS
                     continue
-
-                bant_yok_sayaci = 0
 
                 if bant_var and kutu is not None:
                     bx, by, bw, bh = kutu
                     cv2.rectangle(img, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
-                    cv2.putText(img, "BANTLI ENGEL: EN GENIS PASAJA YONELINIYOR", (30, 110), cv2.FONT_HERSHEY_SIMPLEX,
+                    cv2.putText(img, "BANTLI ENGEL: EN GUVENLI PASAJA YONELINIYOR", (30, 110), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.7, (0, 165, 255), 2)
 
                 cv2.circle(img, (bosluk_x, bosluk_y), 6, (0, 255, 0), -1)
@@ -630,32 +571,28 @@ def main():
                 hata_x = bosluk_x - frame_merkez_x
                 hata_y = bosluk_y - hedef_y
 
-                # =========================================================
-                # TOLERANS: 40 piksel (yaklaşık 1-2 cm pay).
-                # =========================================================
-                if abs(hata_x) < 40:
+                if abs(hata_x) < 15:
                     sag_sol_hiz = 0
                 else:
-                    sag_sol_hiz = int(hata_x * 0.10)
-                    if 0 < sag_sol_hiz < 10:
-                        sag_sol_hiz = 10
-                    elif -10 < sag_sol_hiz < 0:
-                        sag_sol_hiz = -10
+                    sag_sol_hiz = int(hata_x * 0.12)
+                    if 0 < sag_sol_hiz < 6:
+                        sag_sol_hiz = 6
+                    elif -6 < sag_sol_hiz < 0:
+                        sag_sol_hiz = -6
 
-                if abs(hata_y) < 40:
+                if abs(hata_y) < 15:
                     yukari_asagi_hiz = 0
                 else:
                     yukari_asagi_hiz = int(-hata_y * 0.12)
-                    if 0 < yukari_asagi_hiz < 10:
-                        yukari_asagi_hiz = 10
-                    elif -10 < yukari_asagi_hiz < 0:
-                        yukari_asagi_hiz = -10
+                    if 0 < yukari_asagi_hiz < 6:
+                        yukari_asagi_hiz = 6
+                    elif -6 < yukari_asagi_hiz < 0:
+                        yukari_asagi_hiz = -6
 
-                sag_sol_hiz = max(-15, min(15, sag_sol_hiz))
-                yukari_asagi_hiz = max(-15, min(15, yukari_asagi_hiz))
+                sag_sol_hiz = max(-12, min(12, sag_sol_hiz))
+                yukari_asagi_hiz = max(-12, min(12, yukari_asagi_hiz))
 
-                # Onay mekanizması da bu 40 piksellik esneklikle çalışır.
-                if abs(hata_x) < 40 and abs(hata_y) < 40 and sag_sol_hiz == 0 and yukari_asagi_hiz == 0:
+                if abs(hata_x) < 18 and abs(hata_y) < 18 and sag_sol_hiz == 0 and yukari_asagi_hiz == 0:
                     bosluk_onay_sayaci += 1
                     cv2.putText(img, f"STABIL KILITLENME SAGLANDI! ({bosluk_onay_sayaci}/10)", (30, 140),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
@@ -684,7 +621,7 @@ def main():
 
                 kor_ucus_suresi = 2.9 if parkur_adimi == 0 else 2.8
 
-                drone.send_rc_control(0, 35, -10, 0)
+                drone.send_rc_control(0, 35, -15, 0)
                 time.sleep(kor_ucus_suresi)
 
                 drone.send_rc_control(0, 0, 0, 0)
@@ -733,15 +670,15 @@ def main():
 
                     elif tarama_fazi == 1:
                         hedef_y = 45
-                        hata_y_tarama = hedef_y - mevcut_yukseklik
+                        hata_y = hedef_y - mevcut_yukseklik
                         cv2.putText(img, f"TARAMA 2/3: {hedef_y}CM'E INILIYOR", (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                                     (0, 165, 255), 2)
 
                         if time.time() - tarama_baslangic_zamani > 3.5:
-                            hata_y_tarama = 0
+                            hata_y = 0
 
-                        if abs(hata_y_tarama) > 10:
-                            drone.send_rc_control(0, 0, max(-30, min(30, int(hata_y_tarama * 1.5))), 0)
+                        if abs(hata_y) > 10:
+                            drone.send_rc_control(0, 0, max(-30, min(30, int(hata_y * 1.5))), 0)
                         else:
                             drone.send_rc_control(0, 0, 0, 0)
                             tarama_fazi = 2
@@ -776,11 +713,10 @@ def main():
                     onay_sayaci = 0
                 else:
                     if final_arama_fazi == 0:
-                        hata_y_final = 110 - mevcut_yukseklik
-                        cv2.putText(img, f"FINAL TARAMA 1/4: 110CM'E CIKILIYOR", (30, 70), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.7, (0, 165, 255), 2)
-                        if abs(hata_y_final) > 10:
-                            drone.send_rc_control(0, 0, max(-35, min(35, int(hata_y_final * 1.5))), 0)
+                        hata_y = 110 - mevcut_yukseklik
+                        cv2.putText(img, f"FINAL TARAMA 1/4: 110CM'E CIKILIYOR", (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                        if abs(hata_y) > 10:
+                            drone.send_rc_control(0, 0, max(-35, min(35, int(hata_y * 1.5))), 0)
                         else:
                             drone.send_rc_control(0, 0, 0, 0)
                             final_arama_fazi = 1
@@ -788,24 +724,22 @@ def main():
 
                     elif final_arama_fazi == 1:
                         kalan_sure = time.time() - final_arama_faz_baslangic
-                        cv2.putText(img, "FINAL TARAMA 2/4: 110CM CEVRE KONTROLU", (30, 70), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.7, (0, 165, 255), 2)
+                        cv2.putText(img, "FINAL TARAMA 2/4: 110CM CEVRE KONTROLU", (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                         if kalan_sure < 3.0:
-                            drone.send_rc_control(0, 0, 0, -35)
+                            drone.send_rc_control(0, 0, 0, -35) # Sola bak
                         elif kalan_sure < 9.0:
-                            drone.send_rc_control(0, 0, 0, 35)
+                            drone.send_rc_control(0, 0, 0, 35)  # Sağa bak
                         elif kalan_sure < 12.0:
-                            drone.send_rc_control(0, 0, 0, -35)
+                            drone.send_rc_control(0, 0, 0, -35) # Merkeze dön
                         else:
                             drone.send_rc_control(0, 0, 0, 0)
                             final_arama_fazi = 2
 
                     elif final_arama_fazi == 2:
-                        hata_y_final = 55 - mevcut_yukseklik
-                        cv2.putText(img, f"FINAL TARAMA 3/4: 55CM'E INILIYOR", (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                                    (0, 165, 255), 2)
-                        if abs(hata_y_final) > 10:
-                            drone.send_rc_control(0, 0, max(-35, min(35, int(hata_y_final * 1.5))), 0)
+                        hata_y = 55 - mevcut_yukseklik # İrtifa tutarlılığı için 45 yerine 55 yapıldı
+                        cv2.putText(img, f"FINAL TARAMA 3/4: 55CM'E INILIYOR", (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                        if abs(hata_y) > 10:
+                            drone.send_rc_control(0, 0, max(-35, min(35, int(hata_y * 1.5))), 0)
                         else:
                             drone.send_rc_control(0, 0, 0, 0)
                             final_arama_fazi = 3
@@ -813,24 +747,24 @@ def main():
 
                     elif final_arama_fazi == 3:
                         kalan_sure = time.time() - final_arama_faz_baslangic
-                        cv2.putText(img, "FINAL TARAMA 4/4: 55CM CEVRE KONTROLU", (30, 70), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.7, (0, 165, 255), 2)
+                        cv2.putText(img, "FINAL TARAMA 4/4: 55CM CEVRE KONTROLU", (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                         if kalan_sure < 3.0:
-                            drone.send_rc_control(0, 0, 0, -35)
+                            drone.send_rc_control(0, 0, 0, -35) # Sola bak
                         elif kalan_sure < 9.0:
-                            drone.send_rc_control(0, 0, 0, 35)
+                            drone.send_rc_control(0, 0, 0, 35)  # Sağa bak
                         elif kalan_sure < 12.0:
-                            drone.send_rc_control(0, 0, 0, -35)
+                            drone.send_rc_control(0, 0, 0, -35) # Merkeze dön
                         else:
                             drone.send_rc_control(0, 0, 0, 0)
+                            # Ekstra bekleme fazı iptal edildi, doğrudan H aramasına geçiliyor
                             mevcut_durum = DURUM_MAVI_H_ARA
                             h_tarama_baslangic = 0
 
             elif mevcut_durum == DURUM_MAVI_H_ARA:
                 mevcut_yukseklik = drone.get_height()
 
-                hata_y_h = 25 - mevcut_yukseklik
-                dikey_hiz = max(-35, min(35, int(hata_y_h * 1.5)))
+                hata_y = 25 - mevcut_yukseklik
+                dikey_hiz = max(-35, min(35, int(hata_y * 1.5)))
 
                 cv2.putText(img, f"25CM'E ALCALINIYOR | MEVCUT: {mevcut_yukseklik}cm", (30, 70),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
@@ -890,13 +824,13 @@ def main():
                             cv2.putText(img, "ASAMA 1: YATAYDA ORTALANIYOR...", (30, 110), cv2.FONT_HERSHEY_SIMPLEX,
                                         0.7, (0, 165, 255), 2)
                         else:
-                            drone.send_rc_control(0, 0, 0, 0)
+                            drone.send_rc_control(0, 0, 0, 0);
                             h_hizalanma_asama = 1
                     else:
                         drone.send_rc_control(0, 0, 0, 0)
                         if time.time() - h_tarama_baslangic > 2.0:
-                            mevcut_durum = DURUM_MAVI_H_ARA
-                            h_hizalanma_asama = 0
+                            mevcut_durum = DURUM_MAVI_H_ARA;
+                            h_hizalanma_asama = 0;
                             h_tarama_baslangic = 0
 
                 elif h_hizalanma_asama == 1:
@@ -909,12 +843,12 @@ def main():
                             cv2.putText(img, f"ASAMA 2: YAKLASILIYOR... (Y: {h_y}/650)", (30, 110),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                         else:
-                            drone.send_rc_control(0, 0, 0, 0)
-                            h_ileri_baslangic = time.time()
+                            drone.send_rc_control(0, 0, 0, 0);
+                            h_ileri_baslangic = time.time();
                             h_hizalanma_asama = 2
                     else:
-                        drone.send_rc_control(0, 0, 0, 0)
-                        h_ileri_baslangic = time.time()
+                        drone.send_rc_control(0, 0, 0, 0);
+                        h_ileri_baslangic = time.time();
                         h_hizalanma_asama = 2
 
                 elif h_hizalanma_asama == 2:
@@ -925,10 +859,10 @@ def main():
                     if gecen_zaman < EKSTRA_ILERI_SURESI:
                         drone.send_rc_control(0, 20, dikey_hiz, 0)
                     else:
-                        drone.send_rc_control(0, 0, 0, 0)
-                        cv2.imshow("Otonom Parkur", img)
-                        cv2.waitKey(1)
-                        time.sleep(0.5)
+                        drone.send_rc_control(0, 0, 0, 0);
+                        cv2.imshow("Otonom Parkur", img);
+                        cv2.waitKey(1);
+                        time.sleep(0.5);
                         mevcut_durum = DURUM_INIS
 
             elif mevcut_durum == DURUM_INIS:

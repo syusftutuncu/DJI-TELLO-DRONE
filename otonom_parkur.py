@@ -205,25 +205,15 @@ def guvenli_bosluk_bul(frame):
         bosluk_maskesi = cv2.bitwise_and(maske_cerceve_ici, cv2.bitwise_not(maske_engel_sisirilmis))
 
         # =========================================================
-        # DÜZELTME 2 (GÜVENLİ BÖLGEYE BAKMADAN GEÇME):
-        # ArUco kırpması artık maskenin TAMAMINI silmiyor.
-        # Eski kodda ArUco kareye yaklaşınca (tepe_y ROI üstünün üzerine
-        # çıkınca) 'bosluk_maskesi[:] = 0' çalışıyor, r=0 oluyor ve
-        # bant_var=False dönüyordu. Sonuç: drone boşluğa hiç hizalanmadan
-        # 15 kare sonra direkt kör uçuşa geçiyordu.
-        # Artık kırpma yalnızca ardından YETERİNCE boşluk kalıyorsa
-        # uygulanır; kalmıyorsa kırpma atlanır (maske silinmez).
+        # DÜZELTME 6 (ARUCO KIRPMASI KALDIRILDI):
+        # Eski "ArUco tepesinin altını sil" mantığı, boşluğun her zaman
+        # ArUco'nun ÜSTÜNDE olduğunu varsayıyordu. Bu varsayım yanlış
+        # olduğunda gerçek boşluğu silip bant_var=False üretiyor, drone da
+        # boşluğa hizalanamadan banta çarpıyordu. Kaldırıldı: en büyük iç
+        # daire seçimi, boşluğu tüm engellerden (siyah bant dahil) EN UZAK
+        # noktada seçtiği için banttan kaçınmayı zaten sağlıyor; ArUco'nun
+        # siyah kareleri de siyah maskeyle engel sayılıp boşluktan çıkıyor.
         # =========================================================
-        aruco_y = bosluk_takip.get("aruco_tepe_y")
-        if aruco_y is not None:
-            guvenli_sinir_y = aruco_y - y_bas - 10
-            if 0 < guvenli_sinir_y < (y_bit - y_bas):
-                aday_maske = bosluk_maskesi.copy()
-                aday_maske[guvenli_sinir_y:, :] = 0
-                if cv2.countNonZero(aday_maske) > 400:
-                    bosluk_maskesi = aday_maske
-            # guvenli_sinir_y <= 0 durumunda maskeyi komple SİLMİYORUZ (eski hata).
-
         mesafe_haritasi = cv2.distanceTransform(bosluk_maskesi, cv2.DIST_L2, 5)
 
         # =========================================================
@@ -602,18 +592,25 @@ def main():
 
                 if not bant_var:
                     bant_yok_sayaci += 1
-                    cv2.putText(img, f"BANT ARANIYOR, BEKLEYIN ({bant_yok_sayaci}/25)", (30, 110),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    drone.send_rc_control(0, 0, 0, 0)
-
-                    # DÜZELTME: kör uçuşa geçmeden önce boşluğa hizalanmaya daha
-                    # fazla şans ver (15 -> 25). Boşluk gerçekten yoksa ancak o
-                    # zaman doğrudan geçilir.
-                    if bant_yok_sayaci >= 25:
-                        cv2.putText(img, "SIYAH BANT YOK: DIREKT GECILIYOR", (30, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                                    (0, 255, 0), 2)
-                        mevcut_durum = DURUM_KOR_UCUS
-                        bant_yok_sayaci = 0
+                    # =========================================================
+                    # DÜZELTME 7 (BANTA ÇARPMAYI ÖNLE):
+                    # Buraya ArUco'ya kilitlenerek geldik; yani engel MUTLAKA
+                    # var. Boşluğu görememek "bant yok" değil, "çok yaklaştım,
+                    # çerçeve görüş alanına sığmıyor, tespit başarısız" demektir.
+                    # Kör ileri gitmek doğrudan banta çarpmaktır -> ARTIK ASLA
+                    # kör geçmiyoruz. Bunun yerine GERİ çekilip tüm çerçeveyi
+                    # görüş alanına alarak boşluğu yeniden arıyoruz.
+                    # =========================================================
+                    if bant_yok_sayaci <= 60:
+                        cv2.putText(img, f"GECIS GORUNMUYOR - GERI CEKILIP ARANIYOR ({bant_yok_sayaci}/60)", (30, 110),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        drone.send_rc_control(0, -12, 0, 0)
+                    else:
+                        # Yeterince geri çekildik ama hâlâ boşluk yok: çarpmamak
+                        # için güvenli şekilde havada bekle (kör geçiş YOK).
+                        cv2.putText(img, "GECIS BULUNAMADI - GUVENLI DURUS (KOR GECIS YOK)", (30, 110),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        drone.send_rc_control(0, 0, 0, 0)
 
                     continue
 

@@ -162,16 +162,33 @@ def guvenli_bosluk_bul(frame):
 
     BANT_ALAN_ESIGI = 900
     if toplam_alan > BANT_ALAN_ESIGI and len(gecerli_konturlar) > 0:
-        tum_noktalar = np.vstack(gecerli_konturlar)
-        hull = cv2.convexHull(tum_noktalar)
+        # =========================================================
+        # DÜZELTME 4 (SADECE KIRMIZI ÇERÇEVE İÇİ):
+        # Arama bölgesi artık TÜM konturların dışbükey zarfı (convex hull)
+        # DEĞİL, en büyük alanı ÇEVRELEYEN tek engel konturunun (kırmızı/
+        # siyah çerçevenin) İÇİ. Eski convex-hull yöntemi, çerçeve
+        # DIŞINDAKİ dağınık (arka plandaki koyu/kırmızı) lekeleri de
+        # kapsayıp aralarındaki dış boşluğu "geçiş" sanıyordu. Artık
+        # çerçeve dışı tüm alanlar elenir; yalnızca çerçeve içindeki en
+        # geniş boşluk hedeflenir.
+        # =========================================================
+        cerceve_konturu = max(gecerli_konturlar, key=cv2.contourArea)
 
-        maske_dis_ceper = np.zeros_like(maske_engel)
-        cv2.drawContours(maske_dis_ceper, [hull], -1, 255, -1)
+        MIN_CERCEVE_ALAN = 4000
+        if cv2.contourArea(cerceve_konturu) < MIN_CERCEVE_ALAN:
+            bosluk_hafizasini_sifirla()
+            return cx, cy, False, None
+
+        # Çerçevenin dış sınırını doldur -> çerçevenin çevrelediği tüm alan
+        # (kenar + iç). Bu maske çerçeve dışına asla taşmaz.
+        maske_cerceve_ici = np.zeros_like(maske_engel)
+        cv2.drawContours(maske_cerceve_ici, [cerceve_konturu], -1, 255, -1)
 
         guvenlik_kernel = np.ones((25, 25), np.uint8)
         maske_engel_sisirilmis = cv2.dilate(maske_engel, guvenlik_kernel, iterations=1)
 
-        bosluk_maskesi = cv2.bitwise_and(maske_dis_ceper, cv2.bitwise_not(maske_engel_sisirilmis))
+        # Çerçeve içi - (şişirilmiş engel) = çerçeve içindeki güvenli boşluk.
+        bosluk_maskesi = cv2.bitwise_and(maske_cerceve_ici, cv2.bitwise_not(maske_engel_sisirilmis))
 
         # =========================================================
         # DÜZELTME 2 (GÜVENLİ BÖLGEYE BAKMADAN GEÇME):

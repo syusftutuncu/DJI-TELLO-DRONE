@@ -163,26 +163,40 @@ def guvenli_bosluk_bul(frame):
     BANT_ALAN_ESIGI = 900
     if toplam_alan > BANT_ALAN_ESIGI and len(gecerli_konturlar) > 0:
         # =========================================================
-        # DÜZELTME 4 (SADECE KIRMIZI ÇERÇEVE İÇİ):
-        # Arama bölgesi artık TÜM konturların dışbükey zarfı (convex hull)
-        # DEĞİL, en büyük alanı ÇEVRELEYEN tek engel konturunun (kırmızı/
-        # siyah çerçevenin) İÇİ. Eski convex-hull yöntemi, çerçeve
-        # DIŞINDAKİ dağınık (arka plandaki koyu/kırmızı) lekeleri de
-        # kapsayıp aralarındaki dış boşluğu "geçiş" sanıyordu. Artık
-        # çerçeve dışı tüm alanlar elenir; yalnızca çerçeve içindeki en
-        # geniş boşluk hedeflenir.
+        # DÜZELTME 5 (ÇERÇEVE İÇİ + YAKINDA DA ÇALIŞSIN):
+        # Önceki "tek en büyük kontur" yöntemi, drone engele yaklaşıp
+        # çerçeve ROI kenarlarından TAŞINCA çerçeveyi tek parça göremiyordu
+        # (üst/alt/yan çubuklar ayrı konturlara bölünüyordu). Tek çubuğu
+        # doldurmak iç boşluk bırakmadığı için sürekli bant_var=False
+        # dönüyor, drone boşluğa hiç bakmadan direkt kör uçuşa geçiyordu.
+        #
+        # Çözüm: Çerçeveyi KIRMIZI maskeden tanımla. Kırmızının büyük
+        # parçalarının dışbükey zarfı (convex hull), çubuklar bölünse/
+        # kırpılsa bile çerçevenin çevrelediği alanı yeniden birleştirir.
+        # Kırmızı kullanıldığı için arka plandaki koyu lekeler bölgeyi
+        # şişirmez -> çerçeve DIŞI yerler yine boşluk olarak seçilmez.
         # =========================================================
-        cerceve_konturu = max(gecerli_konturlar, key=cv2.contourArea)
+        maske_kirmizi_temiz = cv2.morphologyEx(maske_kirmizi, cv2.MORPH_OPEN, kernel, iterations=1)
+        maske_kirmizi_temiz = cv2.morphologyEx(maske_kirmizi_temiz, cv2.MORPH_CLOSE, kernel, iterations=2)
+        kirmizi_konturlar, _ = cv2.findContours(maske_kirmizi_temiz, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        kirmizi_buyuk = [k for k in kirmizi_konturlar if cv2.contourArea(k) >= MIN_KONTUR_ALAN]
 
-        MIN_CERCEVE_ALAN = 4000
-        if cv2.contourArea(cerceve_konturu) < MIN_CERCEVE_ALAN:
+        maske_cerceve_ici = np.zeros_like(maske_engel)
+
+        if len(kirmizi_buyuk) > 0:
+            # Kırmızı çerçevenin (parçalı/kırpık olsa da) çevrelediği alan.
+            kirmizi_noktalar = np.vstack(kirmizi_buyuk)
+            hull = cv2.convexHull(kirmizi_noktalar)
+            cv2.drawContours(maske_cerceve_ici, [hull], -1, 255, -1)
+        else:
+            # Kırmızı görünmüyorsa: en büyük engel konturunu (çerçeveyi) doldur.
+            cerceve_konturu = max(gecerli_konturlar, key=cv2.contourArea)
+            cv2.drawContours(maske_cerceve_ici, [cerceve_konturu], -1, 255, -1)
+
+        # Çerçeve bölgesi anlamlı bir alan kaplamıyorsa geçiş arama.
+        if cv2.countNonZero(maske_cerceve_ici) < 3000:
             bosluk_hafizasini_sifirla()
             return cx, cy, False, None
-
-        # Çerçevenin dış sınırını doldur -> çerçevenin çevrelediği tüm alan
-        # (kenar + iç). Bu maske çerçeve dışına asla taşmaz.
-        maske_cerceve_ici = np.zeros_like(maske_engel)
-        cv2.drawContours(maske_cerceve_ici, [cerceve_konturu], -1, 255, -1)
 
         guvenlik_kernel = np.ones((25, 25), np.uint8)
         maske_engel_sisirilmis = cv2.dilate(maske_engel, guvenlik_kernel, iterations=1)
